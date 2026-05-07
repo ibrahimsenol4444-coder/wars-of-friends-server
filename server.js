@@ -1,265 +1,87 @@
 const WebSocket = require("ws");
 
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
 const wss = new WebSocket.Server({ port: PORT });
+
+console.log("Server çalışıyor:", PORT);
 
 let rooms = {};
 
-function makeRoomCode() {
+wss.on("connection", (ws) => {
+    console.log("Bir oyuncu bağlandı");
 
-	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    ws.on("message", (message) => {
+        try {
+            const data = JSON.parse(message);
 
-	let code = "";
+            console.log("Mesaj geldi:", data);
 
-	for (let i = 0; i < 6; i++) {
-		code += chars[Math.floor(Math.random() * chars.length)];
-	}
+            if (data.type === "create_room") {
+                rooms[data.room] = [ws];
+                ws.room = data.room;
 
-	return code;
-}
+                ws.send(JSON.stringify({
+                    type: "room_created",
+                    room: data.room
+                }));
+            }
 
-function send(ws, data) {
+            else if (data.type === "join_room") {
 
-	if (ws && ws.readyState === WebSocket.OPEN) {
-		ws.send(JSON.stringify(data));
-	}
-}
+                if (!rooms[data.room]) {
+                    rooms[data.room] = [];
+                }
 
-function broadcast(roomCode, data) {
+                rooms[data.room].push(ws);
+                ws.room = data.room;
 
-	if (!rooms[roomCode]) return;
+                rooms[data.room].forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(JSON.stringify({
+                            type: "player_count",
+                            count: rooms[data.room].length
+                        }));
+                    }
+                });
+            }
 
-	for (const player of rooms[roomCode].players) {
-		send(player.ws, data);
-	}
-}
+            else {
 
-function sendRoomUpdate(roomCode) {
+                if (ws.room && rooms[ws.room]) {
 
-	if (!rooms[roomCode]) return;
+                    rooms[ws.room].forEach(client => {
 
-	const room = rooms[roomCode];
+                        if (
+                            client !== ws &&
+                            client.readyState === WebSocket.OPEN
+                        ) {
+                            client.send(message.toString());
+                        }
 
-	broadcast(roomCode, {
-		type: "room_update",
-		room: roomCode,
-		player_count: room.players.length,
-		players: room.players.map(p => ({
-			id: p.id,
-			name: p.name,
-			player_index: p.player_index
-		}))
-	});
-}
+                    });
 
-wss.on("connection", function connection(ws) {
+                }
 
-	console.log("Yeni bağlantı geldi");
+            }
 
-	ws.roomCode = null;
-	ws.playerId = null;
-	ws.playerIndex = null;
-	ws.playerName = "Oyuncu";
+        } catch (err) {
+            console.log("Hata:", err);
+        }
+    });
 
-	ws.on("message", function incoming(message) {
+    ws.on("close", () => {
 
-		let data;
+        if (ws.room && rooms[ws.room]) {
 
-		try {
+            rooms[ws.room] =
+                rooms[ws.room].filter(client => client !== ws);
 
-			data = JSON.parse(message);
+            console.log("Oyuncu ayrıldı");
+        }
 
-		} catch (e) {
+    });
 
-			console.log("JSON okunamadı");
-			return;
-		}
-
-		console.log("Mesaj geldi:", data);
-
-		// ODA OLUŞTUR
-		if (data.type === "create_room") {
-
-			const roomCode = String(
-				data.room || makeRoomCode()
-			).trim().toUpperCase();
-
-			if (!rooms[roomCode]) {
-
-				rooms[roomCode] = {
-					code: roomCode,
-					players: []
-				};
-			}
-
-			const room = rooms[roomCode];
-
-			const player = {
-				id: Date.now().toString(),
-				name: data.name || "Host",
-				player_index: 0,
-				ws: ws
-			};
-
-			room.players = [player];
-
-			ws.roomCode = roomCode;
-			ws.playerId = player.id;
-			ws.playerIndex = 0;
-			ws.playerName = player.name;
-
-			send(ws, {
-				type: "room_created",
-				room: roomCode,
-				player_index: 0
-			});
-
-			sendRoomUpdate(roomCode);
-
-			console.log("Oda oluşturuldu:", roomCode);
-
-			return;
-		}
-
-		// ODAYA KATIL
-		if (data.type === "join_room") {
-
-			const roomCode = String(
-				data.room || ""
-			).trim().toUpperCase();
-
-			if (!rooms[roomCode]) {
-
-				send(ws, {
-					type: "join_failed",
-					reason: "Oda bulunamadı"
-				});
-
-				return;
-			}
-
-			const room = rooms[roomCode];
-
-			const playerIndex = room.players.length;
-
-			const player = {
-				id: Date.now().toString(),
-				name: data.name || "Oyuncu",
-				player_index: playerIndex,
-				ws: ws
-			};
-
-			room.players.push(player);
-
-			ws.roomCode = roomCode;
-			ws.playerId = player.id;
-			ws.playerIndex = playerIndex;
-			ws.playerName = player.name;
-
-			send(ws, {
-				type: "room_joined",
-				room: roomCode,
-				player_index: playerIndex
-			});
-
-			sendRoomUpdate(roomCode);
-
-			console.log(
-				"Odaya katıldı:",
-				roomCode,
-				"Oyuncu:",
-				playerIndex
-			);
-
-			return;
-		}
-
-		// OYUNA GERİ BAĞLAN
-		if (data.type === "game_join") {
-
-			const roomCode = String(
-				data.room || ""
-			).trim().toUpperCase();
-
-			if (!rooms[roomCode]) {
-				return;
-			}
-
-			const playerIndex = intSafe(data.player_index);
-
-			for (const p of rooms[roomCode].players) {
-
-				if (p.player_index === playerIndex) {
-
-					p.ws = ws;
-
-					ws.roomCode = roomCode;
-					ws.playerIndex = playerIndex;
-
-					console.log(
-						"Oyun bağlantısı geri geldi:",
-						roomCode,
-						playerIndex
-					);
-
-					break;
-				}
-			}
-
-			return;
-		}
-
-		// OYUN BAŞLAT
-		if (data.type === "start_game") {
-
-			const roomCode = ws.roomCode;
-
-			if (!rooms[roomCode]) return;
-
-			broadcast(roomCode, {
-				type: "start_game"
-			});
-
-			console.log("Oyun başlatıldı:", roomCode);
-
-			return;
-		}
-
-		// OYUN VERİLERİ
-		if (
-			data.type === "spawn" ||
-			data.type === "move" ||
-			data.type === "state"
-		) {
-
-			const roomCode = ws.roomCode;
-
-			if (!rooms[roomCode]) return;
-
-			broadcast(roomCode, data);
-
-			console.log(
-				"Oyun mesajı yayıldı:",
-				data.type
-			);
-
-			return;
-		}
-	});
-
-	ws.on("close", function close() {
-
-		console.log("Oyuncu ayrıldı:", ws.roomCode);
-	});
 });
 
-function intSafe(v) {
-
-	const n = parseInt(v);
-
-	if (isNaN(n)) return 0;
-
-	return n;
-}
-
-console.log("Server çalışıyor. Port:", PORT);
+console.log("WebSocket server aktif");
