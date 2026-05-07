@@ -1,0 +1,11 @@
+{
+  "name": "wars-of-friends-server",
+  "version": "1.0.0",
+  "main": "sunucu.js",
+  "scripts": {
+    "start": "node sunucu.js"
+  },
+  "dependencies": {
+    "ws": "^8.20.0"
+  }
+}
