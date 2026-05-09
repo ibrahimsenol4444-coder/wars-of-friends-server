@@ -3,6 +3,7 @@ const WebSocket = require("ws");
 const PORT = process.env.PORT || 3000;
 const wss = new WebSocket.Server({ port: PORT });
 
+const MAX_PLAYERS = 4;
 let rooms = {};
 
 function makeRoomCode() {
@@ -39,10 +40,11 @@ function sendRoomUpdate(roomCode) {
 		type: "room_update",
 		room: roomCode,
 		player_count: room.players.length,
+		max_players: MAX_PLAYERS,
 		players: room.players.map(p => ({
-			id: p.id,
 			name: p.name,
-			player_index: p.player_index
+			player_index: p.player_index,
+			connected: p.ws !== null
 		}))
 	});
 }
@@ -67,11 +69,16 @@ wss.on("connection", function connection(ws) {
 		console.log("Mesaj geldi:", data);
 
 		if (data.type === "create_room") {
-			const roomCode = String(data.room || makeRoomCode()).trim().toUpperCase();
+			let roomCode = String(data.room || makeRoomCode()).trim().toUpperCase();
+
+			while (rooms[roomCode]) {
+				roomCode = makeRoomCode();
+			}
 
 			rooms[roomCode] = {
 				code: roomCode,
-				players: []
+				players: [],
+				started: false
 			};
 
 			const player = {
@@ -111,7 +118,15 @@ wss.on("connection", function connection(ws) {
 
 			const room = rooms[roomCode];
 
-			if (room.players.length >= 4) {
+			if (room.started) {
+				send(ws, {
+					type: "join_failed",
+					reason: "Oyun başladı"
+				});
+				return;
+			}
+
+			if (room.players.length >= MAX_PLAYERS) {
 				send(ws, {
 					type: "join_failed",
 					reason: "Oda dolu"
@@ -174,6 +189,26 @@ wss.on("connection", function connection(ws) {
 
 			if (!roomCode || !rooms[roomCode]) return;
 
+			const room = rooms[roomCode];
+
+			if (ws.playerIndex !== 0) {
+				send(ws, {
+					type: "start_failed",
+					reason: "Oyunu sadece host başlatabilir"
+				});
+				return;
+			}
+
+			if (room.players.length < MAX_PLAYERS) {
+				send(ws, {
+					type: "start_failed",
+					reason: "Oyun için 4 oyuncu gerekli"
+				});
+				return;
+			}
+
+			room.started = true;
+
 			broadcast(roomCode, {
 				type: "start_game",
 				room: roomCode
@@ -215,6 +250,8 @@ wss.on("connection", function connection(ws) {
 				p.ws = null;
 			}
 		}
+
+		sendRoomUpdate(roomCode);
 	});
 });
 
