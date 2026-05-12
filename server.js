@@ -7,14 +7,17 @@ const MAX_PLAYERS = 4;
 let rooms = {};
 
 function makeRoomCode() {
-	const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 	let code = "";
 
 	for (let i = 0; i < 6; i++) {
-		code += chars[Math.floor(Math.random() * chars.length)];
+		code += Math.floor(Math.random() * 10).toString();
 	}
 
 	return code;
+}
+
+function cleanRoomCode(value) {
+	return String(value || "").trim().replace(/\D/g, "").slice(0, 6);
 }
 
 function send(ws, data) {
@@ -69,7 +72,7 @@ wss.on("connection", function connection(ws) {
 		console.log("Mesaj geldi:", data);
 
 		if (data.type === "create_room") {
-			let roomCode = String(data.room || makeRoomCode()).trim().toUpperCase();
+			let roomCode = makeRoomCode();
 
 			while (rooms[roomCode]) {
 				roomCode = makeRoomCode();
@@ -106,7 +109,15 @@ wss.on("connection", function connection(ws) {
 		}
 
 		if (data.type === "join_room") {
-			const roomCode = String(data.room || "").trim().toUpperCase();
+			const roomCode = cleanRoomCode(data.room);
+
+			if (roomCode.length !== 6) {
+				send(ws, {
+					type: "join_failed",
+					reason: "Oda kodu 6 haneli sayı olmalı"
+				});
+				return;
+			}
 
 			if (!rooms[roomCode]) {
 				send(ws, {
@@ -161,7 +172,7 @@ wss.on("connection", function connection(ws) {
 		}
 
 		if (data.type === "game_join") {
-			const roomCode = String(data.room || "").trim().toUpperCase();
+			const roomCode = cleanRoomCode(data.room);
 			const playerIndex = parseInt(data.player_index || 0);
 
 			if (!rooms[roomCode]) {
@@ -224,7 +235,7 @@ wss.on("connection", function connection(ws) {
 			data.type === "state" ||
 			data.type === "turn_update"
 		) {
-			const roomCode = ws.roomCode || data.room;
+			const roomCode = ws.roomCode || cleanRoomCode(data.room);
 
 			if (!roomCode || !rooms[roomCode]) return;
 
