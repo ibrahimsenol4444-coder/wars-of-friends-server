@@ -72,7 +72,12 @@ wss.on("connection", function connection(ws) {
 		console.log("Mesaj geldi:", data);
 
 		if (data.type === "create_room") {
-			let roomCode = makeRoomCode();
+
+			let roomCode = cleanRoomCode(data.room);
+
+			if (roomCode.length !== 6) {
+				roomCode = makeRoomCode();
+			}
 
 			while (rooms[roomCode]) {
 				roomCode = makeRoomCode();
