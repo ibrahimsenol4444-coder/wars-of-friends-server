@@ -233,7 +233,8 @@ wss.on("connection", function connection(ws) {
 			data.type === "spawn" ||
 			data.type === "move" ||
 			data.type === "state" ||
-			data.type === "turn_update"
+			data.type === "turn_update" ||
+			data.type === "kill"
 		) {
 			const roomCode = ws.roomCode || cleanRoomCode(data.room);
 
