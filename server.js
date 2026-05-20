@@ -4,6 +4,8 @@ const PORT = process.env.PORT || 3000;
 const wss = new WebSocket.Server({ port: PORT });
 
 const MAX_PLAYERS = 4;
+const DISCONNECT_CLEANUP_MS = 10000;
+
 let rooms = {};
 
 function makeRoomCode() {
@@ -36,13 +38,20 @@ function broadcast(roomCode, data) {
 	}
 }
 
+function sortPlayers(room) {
+	room.players.sort((a, b) => a.player_index - b.player_index);
+}
+
 function getPublicPlayers(room) {
+	sortPlayers(room);
+
 	return room.players.map(p => ({
 		id: p.id || "",
 		name: p.name,
 		player_index: p.player_index,
 		connected: p.is_bot ? true : p.ws !== null,
-		is_bot: !!p.is_bot
+		is_bot: !!p.is_bot,
+		disconnected: !p.is_bot && p.ws === null
 	}));
 }
 
@@ -81,8 +90,81 @@ function findFirstBot(room) {
 	return null;
 }
 
-function sortPlayers(room) {
-	room.players.sort((a, b) => a.player_index - b.player_index);
+function findDisconnectedByName(room, name) {
+	const cleanName = String(name || "").trim();
+
+	if (cleanName === "") {
+		return null;
+	}
+
+	for (const p of room.players) {
+		if (!p.is_bot && p.ws === null && p.name === cleanName) {
+			return p;
+		}
+	}
+
+	return null;
+}
+
+function findPlayerByIndex(room, playerIndex) {
+	for (const p of room.players) {
+		if (p.player_index === playerIndex) {
+			return p;
+		}
+	}
+
+	return null;
+}
+
+function removePlayer(roomCode, playerIndex, reason) {
+	if (!rooms[roomCode]) return;
+
+	const room = rooms[roomCode];
+	const beforeCount = room.players.length;
+
+	room.players = room.players.filter(p => p.player_index !== playerIndex);
+
+	if (room.players.length !== beforeCount) {
+		console.log("Oyuncu silindi:", roomCode, "Oyuncu:", playerIndex, "Sebep:", reason);
+	}
+
+	if (room.players.length <= 0) {
+		delete rooms[roomCode];
+		console.log("Oda silindi:", roomCode);
+		return;
+	}
+
+	sortPlayers(room);
+	sendRoomUpdate(roomCode);
+}
+
+function scheduleDisconnectCleanup(roomCode, playerIndex) {
+	setTimeout(() => {
+		if (!rooms[roomCode]) return;
+
+		const room = rooms[roomCode];
+		const player = findPlayerByIndex(room, playerIndex);
+
+		if (!player) return;
+		if (player.is_bot) return;
+		if (player.ws !== null) return;
+
+		removePlayer(roomCode, playerIndex, "disconnect_timeout");
+	}, DISCONNECT_CLEANUP_MS);
+}
+
+function attachRealPlayerToSlot(ws, roomCode, room, slotPlayer, name) {
+	slotPlayer.id = "real_" + slotPlayer.player_index + "_" + Date.now();
+	slotPlayer.name = name || ("Oyuncu " + (slotPlayer.player_index + 1));
+	slotPlayer.ws = ws;
+	slotPlayer.is_bot = false;
+	slotPlayer.disconnected_at = null;
+
+	ws.roomCode = roomCode;
+	ws.playerIndex = slotPlayer.player_index;
+	ws.playerName = slotPlayer.name;
+
+	return slotPlayer.player_index;
 }
 
 wss.on("connection", function connection(ws) {
@@ -126,7 +208,8 @@ wss.on("connection", function connection(ws) {
 				name: data.name || "Host",
 				player_index: 0,
 				ws: ws,
-				is_bot: false
+				is_bot: false,
+				disconnected_at: null
 			};
 
 			rooms[roomCode].players.push(player);
@@ -149,6 +232,7 @@ wss.on("connection", function connection(ws) {
 
 		if (data.type === "join_room") {
 			const roomCode = cleanRoomCode(data.room);
+			const playerName = data.name || "Oyuncu";
 
 			if (roomCode.length !== 6) {
 				send(ws, {
@@ -177,48 +261,53 @@ wss.on("connection", function connection(ws) {
 			}
 
 			let playerIndex = -1;
-			const botToReplace = findFirstBot(room);
 
-			if (botToReplace !== null) {
-				playerIndex = botToReplace.player_index;
+			const reconnectPlayer = findDisconnectedByName(room, playerName);
 
-				botToReplace.id = "real_" + playerIndex + "_" + Date.now();
-				botToReplace.name = data.name || ("Oyuncu " + (playerIndex + 1));
-				botToReplace.ws = ws;
-				botToReplace.is_bot = false;
+			if (reconnectPlayer !== null) {
+				playerIndex = attachRealPlayerToSlot(ws, roomCode, room, reconnectPlayer, playerName);
+				console.log("Oyuncu lobiye geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
 			} else {
-				if (room.players.length >= MAX_PLAYERS) {
-					send(ws, {
-						type: "join_failed",
-						reason: "Oda dolu"
+				const botToReplace = findFirstBot(room);
+
+				if (botToReplace !== null) {
+					playerIndex = attachRealPlayerToSlot(ws, roomCode, room, botToReplace, playerName);
+					console.log("Gerçek oyuncu botun yerine geçti:", roomCode, "Oyuncu:", playerIndex);
+				} else {
+					if (room.players.length >= MAX_PLAYERS) {
+						send(ws, {
+							type: "join_failed",
+							reason: "Oda dolu"
+						});
+						return;
+					}
+
+					playerIndex = findFreeIndex(room);
+
+					if (playerIndex === -1) {
+						send(ws, {
+							type: "join_failed",
+							reason: "Oda dolu"
+						});
+						return;
+					}
+
+					room.players.push({
+						id: "real_" + playerIndex + "_" + Date.now(),
+						name: playerName || ("Oyuncu " + (playerIndex + 1)),
+						player_index: playerIndex,
+						ws: ws,
+						is_bot: false,
+						disconnected_at: null
 					});
-					return;
+
+					ws.roomCode = roomCode;
+					ws.playerIndex = playerIndex;
+					ws.playerName = playerName || ("Oyuncu " + (playerIndex + 1));
 				}
-
-				playerIndex = findFreeIndex(room);
-
-				if (playerIndex === -1) {
-					send(ws, {
-						type: "join_failed",
-						reason: "Oda dolu"
-					});
-					return;
-				}
-
-				room.players.push({
-					id: "real_" + playerIndex + "_" + Date.now(),
-					name: data.name || ("Oyuncu " + (playerIndex + 1)),
-					player_index: playerIndex,
-					ws: ws,
-					is_bot: false
-				});
 			}
 
 			sortPlayers(room);
-
-			ws.roomCode = roomCode;
-			ws.playerIndex = playerIndex;
-			ws.playerName = data.name || ("Oyuncu " + (playerIndex + 1));
 
 			send(ws, {
 				type: "room_joined",
@@ -278,13 +367,76 @@ wss.on("connection", function connection(ws) {
 				name: "BOT " + (botIndex + 1),
 				player_index: botIndex,
 				ws: null,
-				is_bot: true
+				is_bot: true,
+				disconnected_at: null
 			});
 
 			sortPlayers(room);
 			sendRoomUpdate(roomCode);
 
 			console.log("Bot eklendi:", roomCode, "Bot:", botIndex);
+			return;
+		}
+
+		if (data.type === "kick_player") {
+			const roomCode = ws.roomCode;
+
+			if (!roomCode || !rooms[roomCode]) return;
+
+			const room = rooms[roomCode];
+			const targetIndex = parseInt(data.player_index);
+
+			if (ws.playerIndex !== 0) {
+				send(ws, {
+					type: "kick_failed",
+					reason: "Oyuncuyu sadece host çıkarabilir"
+				});
+				return;
+			}
+
+			if (targetIndex === 0) {
+				send(ws, {
+					type: "kick_failed",
+					reason: "Host çıkarılamaz"
+				});
+				return;
+			}
+
+			const target = findPlayerByIndex(room, targetIndex);
+
+			if (!target) {
+				send(ws, {
+					type: "kick_failed",
+					reason: "Oyuncu bulunamadı"
+				});
+				return;
+			}
+
+			if (!target.is_bot) {
+				send(target.ws, {
+					type: "kicked",
+					reason: "Host seni odadan çıkardı"
+				});
+
+				if (target.ws && target.ws.readyState === WebSocket.OPEN) {
+					target.ws.close();
+				}
+			}
+
+			removePlayer(roomCode, targetIndex, "host_kick");
+			return;
+		}
+
+		if (data.type === "leave_room") {
+			const roomCode = ws.roomCode;
+			const playerIndex = ws.playerIndex;
+
+			if (!roomCode || !rooms[roomCode]) return;
+
+			removePlayer(roomCode, playerIndex, "leave_room");
+
+			ws.roomCode = null;
+			ws.playerIndex = null;
 			return;
 		}
 
@@ -298,18 +450,19 @@ wss.on("connection", function connection(ws) {
 			}
 
 			const room = rooms[roomCode];
+			const player = findPlayerByIndex(room, playerIndex);
 
-			for (const p of room.players) {
-				if (p.player_index === playerIndex && !p.is_bot) {
-					p.ws = ws;
-					p.name = data.name || p.name;
-					break;
-				}
+			if (player && !player.is_bot) {
+				player.ws = ws;
+				player.name = data.name || player.name;
+				player.disconnected_at = null;
 			}
 
 			ws.roomCode = roomCode;
 			ws.playerIndex = playerIndex;
 			ws.playerName = data.name || "Oyuncu";
+
+			sendRoomUpdate(roomCode);
 
 			console.log("Oyuna geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
 			return;
@@ -374,18 +527,25 @@ wss.on("connection", function connection(ws) {
 
 	ws.on("close", function close() {
 		const roomCode = ws.roomCode;
+		const playerIndex = ws.playerIndex;
 
-		console.log("Oyuncu ayrıldı:", roomCode);
+		console.log("Oyuncu bağlantısı koptu:", roomCode, playerIndex);
 
 		if (!roomCode || !rooms[roomCode]) return;
 
-		for (const p of rooms[roomCode].players) {
-			if (!p.is_bot && p.ws === ws) {
-				p.ws = null;
-			}
+		const room = rooms[roomCode];
+		const player = findPlayerByIndex(room, playerIndex);
+
+		if (!player) return;
+		if (player.is_bot) return;
+
+		if (player.ws === ws) {
+			player.ws = null;
+			player.disconnected_at = Date.now();
 		}
 
 		sendRoomUpdate(roomCode);
+		scheduleDisconnectCleanup(roomCode, playerIndex);
 	});
 });
 
