@@ -30,8 +30,20 @@ function broadcast(roomCode, data) {
 	if (!rooms[roomCode]) return;
 
 	for (const player of rooms[roomCode].players) {
-		send(player.ws, data);
+		if (!player.is_bot) {
+			send(player.ws, data);
+		}
 	}
+}
+
+function getPublicPlayers(room) {
+	return room.players.map(p => ({
+		id: p.id || "",
+		name: p.name,
+		player_index: p.player_index,
+		connected: p.is_bot ? true : p.ws !== null,
+		is_bot: !!p.is_bot
+	}));
 }
 
 function sendRoomUpdate(roomCode) {
@@ -44,12 +56,33 @@ function sendRoomUpdate(roomCode) {
 		room: roomCode,
 		player_count: room.players.length,
 		max_players: MAX_PLAYERS,
-		players: room.players.map(p => ({
-			name: p.name,
-			player_index: p.player_index,
-			connected: p.ws !== null
-		}))
+		players: getPublicPlayers(room)
 	});
+}
+
+function findFreeIndex(room) {
+	for (let i = 0; i < MAX_PLAYERS; i++) {
+		const exists = room.players.some(p => p.player_index === i);
+		if (!exists) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+function findFirstBot(room) {
+	for (const p of room.players) {
+		if (p.is_bot) {
+			return p;
+		}
+	}
+
+	return null;
+}
+
+function sortPlayers(room) {
+	room.players.sort((a, b) => a.player_index - b.player_index);
 }
 
 wss.on("connection", function connection(ws) {
@@ -72,7 +105,6 @@ wss.on("connection", function connection(ws) {
 		console.log("Mesaj geldi:", data);
 
 		if (data.type === "create_room") {
-
 			let roomCode = cleanRoomCode(data.room);
 
 			if (roomCode.length !== 6) {
@@ -90,9 +122,11 @@ wss.on("connection", function connection(ws) {
 			};
 
 			const player = {
+				id: "real_0_" + Date.now(),
 				name: data.name || "Host",
 				player_index: 0,
-				ws: ws
+				ws: ws,
+				is_bot: false
 			};
 
 			rooms[roomCode].players.push(player);
@@ -142,27 +176,49 @@ wss.on("connection", function connection(ws) {
 				return;
 			}
 
-			if (room.players.length >= MAX_PLAYERS) {
-				send(ws, {
-					type: "join_failed",
-					reason: "Oda dolu"
+			let playerIndex = -1;
+			const botToReplace = findFirstBot(room);
+
+			if (botToReplace !== null) {
+				playerIndex = botToReplace.player_index;
+
+				botToReplace.id = "real_" + playerIndex + "_" + Date.now();
+				botToReplace.name = data.name || ("Oyuncu " + (playerIndex + 1));
+				botToReplace.ws = ws;
+				botToReplace.is_bot = false;
+			} else {
+				if (room.players.length >= MAX_PLAYERS) {
+					send(ws, {
+						type: "join_failed",
+						reason: "Oda dolu"
+					});
+					return;
+				}
+
+				playerIndex = findFreeIndex(room);
+
+				if (playerIndex === -1) {
+					send(ws, {
+						type: "join_failed",
+						reason: "Oda dolu"
+					});
+					return;
+				}
+
+				room.players.push({
+					id: "real_" + playerIndex + "_" + Date.now(),
+					name: data.name || ("Oyuncu " + (playerIndex + 1)),
+					player_index: playerIndex,
+					ws: ws,
+					is_bot: false
 				});
-				return;
 			}
 
-			const playerIndex = room.players.length;
-
-			const player = {
-				name: data.name || ("Oyuncu " + (playerIndex + 1)),
-				player_index: playerIndex,
-				ws: ws
-			};
-
-			room.players.push(player);
+			sortPlayers(room);
 
 			ws.roomCode = roomCode;
 			ws.playerIndex = playerIndex;
-			ws.playerName = player.name;
+			ws.playerName = data.name || ("Oyuncu " + (playerIndex + 1));
 
 			send(ws, {
 				type: "room_joined",
@@ -176,6 +232,62 @@ wss.on("connection", function connection(ws) {
 			return;
 		}
 
+		if (data.type === "add_bot") {
+			const roomCode = ws.roomCode;
+
+			if (!roomCode || !rooms[roomCode]) return;
+
+			const room = rooms[roomCode];
+
+			if (ws.playerIndex !== 0) {
+				send(ws, {
+					type: "add_bot_failed",
+					reason: "Botu sadece host ekleyebilir"
+				});
+				return;
+			}
+
+			if (room.started) {
+				send(ws, {
+					type: "add_bot_failed",
+					reason: "Oyun başladı"
+				});
+				return;
+			}
+
+			if (room.players.length >= MAX_PLAYERS) {
+				send(ws, {
+					type: "add_bot_failed",
+					reason: "Oda dolu"
+				});
+				return;
+			}
+
+			const botIndex = findFreeIndex(room);
+
+			if (botIndex === -1) {
+				send(ws, {
+					type: "add_bot_failed",
+					reason: "Boş oyuncu yeri yok"
+				});
+				return;
+			}
+
+			room.players.push({
+				id: "bot_" + botIndex + "_" + Date.now(),
+				name: "BOT " + (botIndex + 1),
+				player_index: botIndex,
+				ws: null,
+				is_bot: true
+			});
+
+			sortPlayers(room);
+			sendRoomUpdate(roomCode);
+
+			console.log("Bot eklendi:", roomCode, "Bot:", botIndex);
+			return;
+		}
+
 		if (data.type === "game_join") {
 			const roomCode = cleanRoomCode(data.room);
 			const playerIndex = parseInt(data.player_index || 0);
@@ -185,9 +297,12 @@ wss.on("connection", function connection(ws) {
 				return;
 			}
 
-			for (const p of rooms[roomCode].players) {
-				if (p.player_index === playerIndex) {
+			const room = rooms[roomCode];
+
+			for (const p of room.players) {
+				if (p.player_index === playerIndex && !p.is_bot) {
 					p.ws = ws;
+					p.name = data.name || p.name;
 					break;
 				}
 			}
@@ -224,10 +339,12 @@ wss.on("connection", function connection(ws) {
 			}
 
 			room.started = true;
+			sortPlayers(room);
 
 			broadcast(roomCode, {
 				type: "start_game",
-				room: roomCode
+				room: roomCode,
+				players: getPublicPlayers(room)
 			});
 
 			console.log("Oyun başlatıldı:", roomCode);
@@ -263,7 +380,7 @@ wss.on("connection", function connection(ws) {
 		if (!roomCode || !rooms[roomCode]) return;
 
 		for (const p of rooms[roomCode].players) {
-			if (p.ws === ws) {
+			if (!p.is_bot && p.ws === ws) {
 				p.ws = null;
 			}
 		}
