@@ -29,7 +29,13 @@ function cleanSkin(value) {
 		"yeniceri",
 		"viking",
 		"samuray",
-		"spartali"
+		"spartali",
+		"kurt_savascisi",
+		"barbar",
+		"gladyator",
+		"ninja",
+		"vampir",
+		"zirhli_sovalye"
 	];
 
 	if (allowedSkins.includes(skin)) {
