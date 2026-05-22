@@ -225,7 +225,8 @@ wss.on("connection", function connection(ws) {
 			rooms[roomCode] = {
 				code: roomCode,
 				players: [],
-				started: false
+				started: false,
+				last_state: null
 			};
 
 			const player = {
@@ -494,6 +495,10 @@ wss.on("connection", function connection(ws) {
 
 			sendRoomUpdate(roomCode);
 
+			if (room.last_state) {
+				send(ws, room.last_state);
+			}
+
 			console.log("Oyuna geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
 			return;
 		}
@@ -547,6 +552,10 @@ wss.on("connection", function connection(ws) {
 
 			data.room = roomCode;
 			data.player_index = ws.playerIndex;
+
+			if (data.type === "state") {
+				rooms[roomCode].last_state = data;
+			}
 
 			broadcast(roomCode, data);
 
