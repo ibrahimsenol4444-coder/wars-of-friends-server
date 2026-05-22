@@ -4,7 +4,10 @@ const PORT = process.env.PORT || 3000;
 const wss = new WebSocket.Server({ port: PORT });
 
 const MAX_PLAYERS = 4;
-const DISCONNECT_CLEANUP_MS = 10000;
+
+// Eskisi 10 saniyeydi. Oyun içinde küçük kopmalarda odayı siliyordu.
+// 5 dakika yaptık.
+const DISCONNECT_CLEANUP_MS = 5 * 60 * 1000;
 
 let rooms = {};
 
@@ -140,10 +143,43 @@ function findPlayerByIndex(room, playerIndex) {
 	return null;
 }
 
+function sanitizeState(data) {
+	const state = { ...data };
+
+	// En kritik düzeltme:
+	// Kazanan yoksa 0 gönderilmesin. 0 = Takım 1 kazandı gibi algılanıyor.
+	if (
+		state.winning_team === undefined ||
+		state.winning_team === null ||
+		state.winning_team === 0 ||
+		state.winning_team === "0"
+	) {
+		state.winning_team = -1;
+	}
+
+	return state;
+}
+
 function removePlayer(roomCode, playerIndex, reason) {
 	if (!rooms[roomCode]) return;
 
 	const room = rooms[roomCode];
+
+	// Oyun başladıysa oyuncuyu hemen silme.
+	// Sadece bağlantısız göster. Slotu koru.
+	if (room.started) {
+		const player = findPlayerByIndex(room, playerIndex);
+
+		if (player && !player.is_bot) {
+			player.ws = null;
+			player.disconnected_at = Date.now();
+			console.log("Oyuncu slotu korundu:", roomCode, "Oyuncu:", playerIndex, "Sebep:", reason);
+			sendRoomUpdate(roomCode);
+		}
+
+		return;
+	}
+
 	const beforeCount = room.players.length;
 
 	room.players = room.players.filter(p => p.player_index !== playerIndex);
@@ -279,8 +315,11 @@ wss.on("connection", function connection(ws) {
 			}
 
 			const room = rooms[roomCode];
+			let playerIndex = -1;
 
-			if (room.started) {
+			const reconnectPlayer = findDisconnectedByName(room, playerName);
+
+			if (room.started && reconnectPlayer === null) {
 				send(ws, {
 					type: "join_failed",
 					reason: "Oyun başladı"
@@ -288,13 +327,9 @@ wss.on("connection", function connection(ws) {
 				return;
 			}
 
-			let playerIndex = -1;
-
-			const reconnectPlayer = findDisconnectedByName(room, playerName);
-
 			if (reconnectPlayer !== null) {
 				playerIndex = attachRealPlayerToSlot(ws, roomCode, room, reconnectPlayer, playerName, playerSkin);
-				console.log("Oyuncu lobiye geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
+				console.log("Oyuncu geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
 			} else {
 				const botToReplace = findFirstBot(room);
 
@@ -345,6 +380,10 @@ wss.on("connection", function connection(ws) {
 			});
 
 			sendRoomUpdate(roomCode);
+
+			if (room.last_state) {
+				send(ws, room.last_state);
+			}
 
 			console.log("Odaya katıldı:", roomCode, "Oyuncu:", playerIndex);
 			return;
@@ -413,7 +452,6 @@ wss.on("connection", function connection(ws) {
 
 			if (!roomCode || !rooms[roomCode]) return;
 
-			const room = rooms[roomCode];
 			const targetIndex = parseInt(data.player_index);
 
 			if (ws.playerIndex !== 0) {
@@ -432,6 +470,7 @@ wss.on("connection", function connection(ws) {
 				return;
 			}
 
+			const room = rooms[roomCode];
 			const target = findPlayerByIndex(room, targetIndex);
 
 			if (!target) {
@@ -554,6 +593,7 @@ wss.on("connection", function connection(ws) {
 			data.player_index = ws.playerIndex;
 
 			if (data.type === "state") {
+				data = sanitizeState(data);
 				rooms[roomCode].last_state = data;
 			}
 
