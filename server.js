@@ -4,12 +4,10 @@ const PORT = process.env.PORT || 3000;
 const wss = new WebSocket.Server({ port: PORT });
 
 const MAX_PLAYERS = 4;
-
-// Eskisi 10 saniyeydi. Oyun içinde küçük kopmalarda odayı siliyordu.
-// 5 dakika yaptık.
 const DISCONNECT_CLEANUP_MS = 5 * 60 * 1000;
 
 let rooms = {};
+let socketCounter = 1;
 
 function makeRoomCode() {
 	let code = "";
@@ -48,6 +46,16 @@ function cleanSkin(value) {
 	return "yeniceri";
 }
 
+function cleanEffect(value, fallback) {
+	const effect = String(value || fallback).trim();
+
+	if (effect === "") {
+		return fallback;
+	}
+
+	return effect;
+}
+
 function send(ws, data) {
 	if (ws && ws.readyState === WebSocket.OPEN) {
 		ws.send(JSON.stringify(data));
@@ -76,6 +84,8 @@ function getPublicPlayers(room) {
 		name: p.name,
 		player_index: p.player_index,
 		skin: p.skin || "yeniceri",
+		spawn_effect: p.spawn_effect || "isik",
+		kill_effect: p.kill_effect || "kilic",
 		connected: p.is_bot ? true : p.ws !== null,
 		is_bot: !!p.is_bot,
 		disconnected: !p.is_bot && p.ws === null
@@ -143,30 +153,11 @@ function findPlayerByIndex(room, playerIndex) {
 	return null;
 }
 
-function sanitizeState(data) {
-	const state = { ...data };
-
-	// En kritik düzeltme:
-	// Kazanan yoksa 0 gönderilmesin. 0 = Takım 1 kazandı gibi algılanıyor.
-	if (
-		state.winning_team === undefined ||
-		state.winning_team === null ||
-		state.winning_team === 0 ||
-		state.winning_team === "0"
-	) {
-		state.winning_team = -1;
-	}
-
-	return state;
-}
-
 function removePlayer(roomCode, playerIndex, reason) {
 	if (!rooms[roomCode]) return;
 
 	const room = rooms[roomCode];
 
-	// Oyun başladıysa oyuncuyu hemen silme.
-	// Sadece bağlantısız göster. Slotu koru.
 	if (room.started) {
 		const player = findPlayerByIndex(room, playerIndex);
 
@@ -213,10 +204,12 @@ function scheduleDisconnectCleanup(roomCode, playerIndex) {
 	}, DISCONNECT_CLEANUP_MS);
 }
 
-function attachRealPlayerToSlot(ws, roomCode, room, slotPlayer, name, skin) {
+function attachRealPlayerToSlot(ws, roomCode, room, slotPlayer, name, skin, spawnEffect, killEffect) {
 	slotPlayer.id = "real_" + slotPlayer.player_index + "_" + Date.now();
 	slotPlayer.name = name || ("Oyuncu " + (slotPlayer.player_index + 1));
 	slotPlayer.skin = cleanSkin(skin);
+	slotPlayer.spawn_effect = cleanEffect(spawnEffect, slotPlayer.spawn_effect || "isik");
+	slotPlayer.kill_effect = cleanEffect(killEffect, slotPlayer.kill_effect || "kilic");
 	slotPlayer.ws = ws;
 	slotPlayer.is_bot = false;
 	slotPlayer.disconnected_at = null;
@@ -229,11 +222,12 @@ function attachRealPlayerToSlot(ws, roomCode, room, slotPlayer, name, skin) {
 }
 
 wss.on("connection", function connection(ws) {
-	console.log("Yeni bağlantı geldi");
-
+	ws.socketId = socketCounter++;
 	ws.roomCode = null;
 	ws.playerIndex = null;
 	ws.playerName = "Oyuncu";
+
+	console.log("Yeni bağlantı geldi. Socket:", ws.socketId);
 
 	ws.on("message", function incoming(message) {
 		let data;
@@ -270,6 +264,8 @@ wss.on("connection", function connection(ws) {
 				name: data.name || "Host",
 				player_index: 0,
 				skin: cleanSkin(data.skin),
+				spawn_effect: cleanEffect(data.spawn_effect, "isik"),
+				kill_effect: cleanEffect(data.kill_effect, "kilic"),
 				ws: ws,
 				is_bot: false,
 				disconnected_at: null
@@ -297,6 +293,8 @@ wss.on("connection", function connection(ws) {
 			const roomCode = cleanRoomCode(data.room);
 			const playerName = data.name || "Oyuncu";
 			const playerSkin = cleanSkin(data.skin);
+			const playerSpawnEffect = cleanEffect(data.spawn_effect, "isik");
+			const playerKillEffect = cleanEffect(data.kill_effect, "kilic");
 
 			if (roomCode.length !== 6) {
 				send(ws, {
@@ -328,13 +326,13 @@ wss.on("connection", function connection(ws) {
 			}
 
 			if (reconnectPlayer !== null) {
-				playerIndex = attachRealPlayerToSlot(ws, roomCode, room, reconnectPlayer, playerName, playerSkin);
+				playerIndex = attachRealPlayerToSlot(ws, roomCode, room, reconnectPlayer, playerName, playerSkin, playerSpawnEffect, playerKillEffect);
 				console.log("Oyuncu geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
 			} else {
 				const botToReplace = findFirstBot(room);
 
 				if (botToReplace !== null) {
-					playerIndex = attachRealPlayerToSlot(ws, roomCode, room, botToReplace, playerName, playerSkin);
+					playerIndex = attachRealPlayerToSlot(ws, roomCode, room, botToReplace, playerName, playerSkin, playerSpawnEffect, playerKillEffect);
 					console.log("Gerçek oyuncu botun yerine geçti:", roomCode, "Oyuncu:", playerIndex);
 				} else {
 					if (room.players.length >= MAX_PLAYERS) {
@@ -360,6 +358,8 @@ wss.on("connection", function connection(ws) {
 						name: playerName || ("Oyuncu " + (playerIndex + 1)),
 						player_index: playerIndex,
 						skin: playerSkin,
+						spawn_effect: playerSpawnEffect,
+						kill_effect: playerKillEffect,
 						ws: ws,
 						is_bot: false,
 						disconnected_at: null
@@ -435,6 +435,8 @@ wss.on("connection", function connection(ws) {
 				name: "BOT " + (botIndex + 1),
 				player_index: botIndex,
 				skin: "yeniceri",
+				spawn_effect: "isik",
+				kill_effect: "kilic",
 				ws: null,
 				is_bot: true,
 				disconnected_at: null
@@ -521,16 +523,27 @@ wss.on("connection", function connection(ws) {
 			const room = rooms[roomCode];
 			const player = findPlayerByIndex(room, playerIndex);
 
-			if (player && !player.is_bot) {
-				player.ws = ws;
-				player.name = data.name || player.name;
-				player.skin = cleanSkin(data.skin || player.skin);
-				player.disconnected_at = null;
+			if (!player || player.is_bot) {
+				console.log("Game join oyuncu yok:", roomCode, "Oyuncu:", playerIndex);
+				return;
 			}
+
+			player.ws = ws;
+			player.name = data.name || player.name;
+			player.skin = cleanSkin(data.skin || player.skin);
+			player.spawn_effect = cleanEffect(data.spawn_effect, player.spawn_effect || "isik");
+			player.kill_effect = cleanEffect(data.kill_effect, player.kill_effect || "kilic");
+			player.disconnected_at = null;
 
 			ws.roomCode = roomCode;
 			ws.playerIndex = playerIndex;
-			ws.playerName = data.name || "Oyuncu";
+			ws.playerName = player.name;
+
+			send(ws, {
+				type: "game_joined",
+				room: roomCode,
+				player_index: playerIndex
+			});
 
 			sendRoomUpdate(roomCode);
 
@@ -538,7 +551,7 @@ wss.on("connection", function connection(ws) {
 				send(ws, room.last_state);
 			}
 
-			console.log("Oyuna geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
+			console.log("Oyuna bağlandı:", roomCode, "Oyuncu:", playerIndex, "Socket:", ws.socketId);
 			return;
 		}
 
@@ -593,7 +606,6 @@ wss.on("connection", function connection(ws) {
 			data.player_index = ws.playerIndex;
 
 			if (data.type === "state") {
-				data = sanitizeState(data);
 				rooms[roomCode].last_state = data;
 			}
 
@@ -608,7 +620,7 @@ wss.on("connection", function connection(ws) {
 		const roomCode = ws.roomCode;
 		const playerIndex = ws.playerIndex;
 
-		console.log("Oyuncu bağlantısı koptu:", roomCode, playerIndex);
+		console.log("Socket kapandı:", ws.socketId, "Oda:", roomCode, "Oyuncu:", playerIndex);
 
 		if (!roomCode || !rooms[roomCode]) return;
 
@@ -618,10 +630,15 @@ wss.on("connection", function connection(ws) {
 		if (!player) return;
 		if (player.is_bot) return;
 
-		if (player.ws === ws) {
-			player.ws = null;
-			player.disconnected_at = Date.now();
+		if (player.ws !== ws) {
+			console.log("Eski socket kapandı, oyuncu düşürülmedi:", roomCode, "Oyuncu:", playerIndex, "Socket:", ws.socketId);
+			return;
 		}
+
+		player.ws = null;
+		player.disconnected_at = Date.now();
+
+		console.log("Oyuncu bağlantısı gerçekten koptu:", roomCode, playerIndex);
 
 		sendRoomUpdate(roomCode);
 		scheduleDisconnectCleanup(roomCode, playerIndex);
