@@ -596,7 +596,8 @@ wss.on("connection", function connection(ws) {
 			data.type === "move" ||
 			data.type === "state" ||
 			data.type === "turn_update" ||
-			data.type === "kill"
+			data.type === "kill" ||
+			data.type === "reaction"
 		) {
 			const roomCode = ws.roomCode || cleanRoomCode(data.room);
 
