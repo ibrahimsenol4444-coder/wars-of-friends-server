@@ -86,6 +86,10 @@ function getPublicPlayers(room) {
 		skin: p.skin || "yeniceri",
 		spawn_effect: p.spawn_effect || "isik",
 		kill_effect: p.kill_effect || "kilic",
+		emoji: p.emoji || "gulme",
+		flag: p.flag || "bayrak_01_lutuf",
+		sound_effect: p.sound_effect || "ses_05_kilic",
+		taunt: p.taunt || "replik_01",
 		connected: p.is_bot ? true : p.ws !== null,
 		is_bot: !!p.is_bot,
 		disconnected: !p.is_bot && p.ws === null
@@ -204,12 +208,16 @@ function scheduleDisconnectCleanup(roomCode, playerIndex) {
 	}, DISCONNECT_CLEANUP_MS);
 }
 
-function attachRealPlayerToSlot(ws, roomCode, room, slotPlayer, name, skin, spawnEffect, killEffect) {
+function attachRealPlayerToSlot(ws, roomCode, room, slotPlayer, data) {
 	slotPlayer.id = "real_" + slotPlayer.player_index + "_" + Date.now();
-	slotPlayer.name = name || ("Oyuncu " + (slotPlayer.player_index + 1));
-	slotPlayer.skin = cleanSkin(skin);
-	slotPlayer.spawn_effect = cleanEffect(spawnEffect, slotPlayer.spawn_effect || "isik");
-	slotPlayer.kill_effect = cleanEffect(killEffect, slotPlayer.kill_effect || "kilic");
+	slotPlayer.name = data.name || ("Oyuncu " + (slotPlayer.player_index + 1));
+	slotPlayer.skin = cleanSkin(data.skin);
+	slotPlayer.spawn_effect = cleanEffect(data.spawn_effect, slotPlayer.spawn_effect || "isik");
+	slotPlayer.kill_effect = cleanEffect(data.kill_effect, slotPlayer.kill_effect || "kilic");
+	slotPlayer.emoji = cleanEffect(data.emoji, slotPlayer.emoji || "gulme");
+	slotPlayer.flag = cleanEffect(data.flag, slotPlayer.flag || "bayrak_01_lutuf");
+	slotPlayer.sound_effect = cleanEffect(data.sound_effect, slotPlayer.sound_effect || "ses_05_kilic");
+	slotPlayer.taunt = cleanEffect(data.taunt, slotPlayer.taunt || "replik_01");
 	slotPlayer.ws = ws;
 	slotPlayer.is_bot = false;
 	slotPlayer.disconnected_at = null;
@@ -266,6 +274,10 @@ wss.on("connection", function connection(ws) {
 				skin: cleanSkin(data.skin),
 				spawn_effect: cleanEffect(data.spawn_effect, "isik"),
 				kill_effect: cleanEffect(data.kill_effect, "kilic"),
+				emoji: cleanEffect(data.emoji, "gulme"),
+				flag: cleanEffect(data.flag, "bayrak_01_lutuf"),
+				sound_effect: cleanEffect(data.sound_effect, "ses_05_kilic"),
+				taunt: cleanEffect(data.taunt, "replik_01"),
 				ws: ws,
 				is_bot: false,
 				disconnected_at: null
@@ -295,6 +307,10 @@ wss.on("connection", function connection(ws) {
 			const playerSkin = cleanSkin(data.skin);
 			const playerSpawnEffect = cleanEffect(data.spawn_effect, "isik");
 			const playerKillEffect = cleanEffect(data.kill_effect, "kilic");
+			const playerEmoji = cleanEffect(data.emoji, "gulme");
+			const playerFlag = cleanEffect(data.flag, "bayrak_01_lutuf");
+			const playerSoundEffect = cleanEffect(data.sound_effect, "ses_05_kilic");
+			const playerTaunt = cleanEffect(data.taunt, "replik_01");
 
 			if (roomCode.length !== 6) {
 				send(ws, {
@@ -325,14 +341,25 @@ wss.on("connection", function connection(ws) {
 				return;
 			}
 
+			const playerData = {
+				name: playerName,
+				skin: playerSkin,
+				spawn_effect: playerSpawnEffect,
+				kill_effect: playerKillEffect,
+				emoji: playerEmoji,
+				flag: playerFlag,
+				sound_effect: playerSoundEffect,
+				taunt: playerTaunt
+			};
+
 			if (reconnectPlayer !== null) {
-				playerIndex = attachRealPlayerToSlot(ws, roomCode, room, reconnectPlayer, playerName, playerSkin, playerSpawnEffect, playerKillEffect);
+				playerIndex = attachRealPlayerToSlot(ws, roomCode, room, reconnectPlayer, playerData);
 				console.log("Oyuncu geri bağlandı:", roomCode, "Oyuncu:", playerIndex);
 			} else {
 				const botToReplace = findFirstBot(room);
 
 				if (botToReplace !== null) {
-					playerIndex = attachRealPlayerToSlot(ws, roomCode, room, botToReplace, playerName, playerSkin, playerSpawnEffect, playerKillEffect);
+					playerIndex = attachRealPlayerToSlot(ws, roomCode, room, botToReplace, playerData);
 					console.log("Gerçek oyuncu botun yerine geçti:", roomCode, "Oyuncu:", playerIndex);
 				} else {
 					if (room.players.length >= MAX_PLAYERS) {
@@ -360,6 +387,10 @@ wss.on("connection", function connection(ws) {
 						skin: playerSkin,
 						spawn_effect: playerSpawnEffect,
 						kill_effect: playerKillEffect,
+						emoji: playerEmoji,
+						flag: playerFlag,
+						sound_effect: playerSoundEffect,
+						taunt: playerTaunt,
 						ws: ws,
 						is_bot: false,
 						disconnected_at: null
@@ -437,6 +468,10 @@ wss.on("connection", function connection(ws) {
 				skin: "yeniceri",
 				spawn_effect: "isik",
 				kill_effect: "kilic",
+				emoji: "gulme",
+				flag: "bayrak_01_lutuf",
+				sound_effect: "ses_05_kilic",
+				taunt: "replik_01",
 				ws: null,
 				is_bot: true,
 				disconnected_at: null
@@ -533,6 +568,10 @@ wss.on("connection", function connection(ws) {
 			player.skin = cleanSkin(data.skin || player.skin);
 			player.spawn_effect = cleanEffect(data.spawn_effect, player.spawn_effect || "isik");
 			player.kill_effect = cleanEffect(data.kill_effect, player.kill_effect || "kilic");
+			player.emoji = cleanEffect(data.emoji, player.emoji || "gulme");
+			player.flag = cleanEffect(data.flag, player.flag || "bayrak_01_lutuf");
+			player.sound_effect = cleanEffect(data.sound_effect, player.sound_effect || "ses_05_kilic");
+			player.taunt = cleanEffect(data.taunt, player.taunt || "replik_01");
 			player.disconnected_at = null;
 
 			ws.roomCode = roomCode;
